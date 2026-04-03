@@ -6,6 +6,7 @@ import { mapboxToken } from "./config.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { computeGradients, GradientStore } from "./computeGradients.ts";
 import { Progress } from "antd";
+import { useSpring } from "pat-web-utils";
 
 const mapStyle = "mapbox://styles/paricdil/cme3ipbul01pr01s24ymeep2j";
 
@@ -15,7 +16,7 @@ const ROAD_QUERY_SOURCE = "streets-v8";
 
 const MIN_SCALE = 6;
 const MAX_SCALE = 25;
-const PERCENTILE = 0.98;
+const PERCENTILE = 0.975;
 const COLORS = ["#00ff00", "#ffff00", "#ff0000", "#ff00ff", "#ffffff"];
 
 function buildColorExpression(maxGrade: number) {
@@ -75,7 +76,8 @@ function ensureGradientLayer(map: mapboxgl.Map, maxGrade: number) {
 }
 
 function App() {
-  const [maxGrade, setMaxGrade] = useState(MIN_SCALE);
+  const [maxGradeTarget, setMaxGradeTarget] = useState(MIN_SCALE);
+  const maxGrade = useSpring(maxGradeTarget);
   const [progress, setProgress] = useState<{ processed: number; total: number } | null>(null);
   const mapRef = useRef<MapRef>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -105,10 +107,10 @@ function App() {
     debounceRef.current = setTimeout(async () => {
       const map = mapRef.current?.getMap();
       if (!map || !map.isStyleLoaded()) return;
-      if (map.getZoom() < 12) return;
+      if (map.getZoom() < 11) return;
 
       ensureRoadSource(map);
-      ensureGradientLayer(map, maxGrade);
+      ensureGradientLayer(map, maxGradeTarget);
 
       computingRef.current = true;
       const src = map.getSource(GRADIENT_SOURCE) as mapboxgl.GeoJSONSource | undefined;
@@ -125,23 +127,27 @@ function App() {
         });
         setProgress(null);
 
-        const segs = store.segments;
-        if (!segs.length) return;
+        const bounds = map.getBounds()!;
         const grades: number[] = [];
-        for (const f of segs) {
+        for (const f of store.segments) {
           const grade = f.properties?.grade;
-          if (typeof grade === "number" && grade > 0) grades.push(grade);
+          if (typeof grade !== "number" || grade <= 0) continue;
+          const c = f.geometry.coordinates[0];
+          if (c[0] >= bounds.getWest() && c[0] <= bounds.getEast() &&
+            c[1] >= bounds.getSouth() && c[1] <= bounds.getNorth()) {
+            grades.push(grade);
+          }
         }
         if (!grades.length) return;
 
         grades.sort((a, b) => a - b);
         const pPercentile = grades[Math.floor(grades.length * PERCENTILE)];
-        setMaxGrade(Math.min(MAX_SCALE, Math.max(MIN_SCALE, pPercentile)));
+        setMaxGradeTarget(Math.min(MAX_SCALE, Math.max(MIN_SCALE, pPercentile)));
       } finally {
         computingRef.current = false;
       }
     }, 300);
-  }, [maxGrade]);
+  }, [maxGradeTarget]);
 
   const pct = progress
     ? Math.round((progress.processed / progress.total) * 100)

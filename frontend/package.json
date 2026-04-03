@@ -18,9 +18,11 @@
     "@types/mapbox__mapbox-gl-geocoder": "^4.7.3",
     "@types/react-map-gl": "^6.1.7",
     "antd": "^6.3.5",
+    "pat-web-utils": "^1.0.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "react-map-gl": "^8.0.4"
+    "react-map-gl": "^8.0.4",
+    "react-query": "^3.39.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.32.0",
