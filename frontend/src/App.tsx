@@ -3,155 +3,170 @@ import Map from "react-map-gl/mapbox";
 import type { MapRef } from "react-map-gl/mapbox";
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { mapboxToken } from "./config.ts";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { computeGradients, GradientStore } from "./computeGradients.ts";
-import { Progress } from "antd";
-import { useSpring } from "pat-web-utils";
+import { useEffect, useRef, useState } from "react";
+import { processTick, SlopeStore } from "./computeSlopes.ts";
 
-const mapStyle = "mapbox://styles/paricdil/cme3ipbul01pr01s24ymeep2j";
 
-const GRADIENT_SOURCE = "gradient-data";
-const GRADIENT_LAYER = "gradient-lines";
-const ROAD_QUERY_SOURCE = "streets-v8";
+const mapStyle = "mapbox://styles/mapbox/light-v11";
 
-const MIN_SCALE = 6;
-const MAX_SCALE = 25;
-const PERCENTILE = 0.975;
+const SLOPE_SOURCE = "slope-data";
+const SLOPE_LAYER = "slope-fill";
+
+const MIN_SCALE = 12;
+const MAX_SCALE = 50;
+const PERCENTILE = 0.99;
+const ZOOM_SETTLE_MS = 400;
 const COLORS = ["#00ff00", "#ffff00", "#ff0000", "#ff00ff", "#ffffff"];
 
-function buildColorExpression(maxGrade: number) {
-  const step = maxGrade / (COLORS.length - 1);
+function buildFillColor(maxSlope: number) {
+  const step = maxSlope / (COLORS.length - 1);
   return [
     "interpolate",
     ["linear"],
-    ["get", "grade"],
+    ["get", "slope"],
     ...COLORS.flatMap((color, i) => [step * i, color]),
   ];
 }
 
-const ROAD_LOADER_LAYER = "road-loader";
-
-function ensureRoadSource(map: mapboxgl.Map) {
-  if (!map.getSource(ROAD_QUERY_SOURCE)) {
-    map.addSource(ROAD_QUERY_SOURCE, {
-      type: "vector",
-      url: "mapbox://mapbox.mapbox-streets-v8",
-    });
+function findFirstRoadLayer(map: mapboxgl.Map): string | undefined {
+  for (const layer of map.getStyle().layers) {
+    if (layer.id.startsWith("road") || layer.id.startsWith("tunnel") || layer.id.startsWith("bridge")) {
+      return layer.id;
+    }
   }
-  if (!map.getLayer(ROAD_LOADER_LAYER)) {
-    map.addLayer({
-      id: ROAD_LOADER_LAYER,
-      type: "line",
-      source: ROAD_QUERY_SOURCE,
-      "source-layer": "road",
-      paint: { "line-opacity": 0.01, "line-width": 0.5 },
-    });
-  }
+  return undefined;
 }
 
-function ensureGradientLayer(map: mapboxgl.Map, maxGrade: number) {
-  if (!map.getSource(GRADIENT_SOURCE)) {
-    map.addSource(GRADIENT_SOURCE, {
+function ensureSlopeLayer(map: mapboxgl.Map, maxSlope: number) {
+  if (!map.getSource(SLOPE_SOURCE)) {
+    map.addSource(SLOPE_SOURCE, {
       type: "geojson",
       data: { type: "FeatureCollection", features: [] },
     });
   }
-  if (!map.getLayer(GRADIENT_LAYER)) {
+  if (!map.getLayer(SLOPE_LAYER)) {
+    const beforeId = findFirstRoadLayer(map);
     map.addLayer({
-      id: GRADIENT_LAYER,
-      type: "line",
-      source: GRADIENT_SOURCE,
-      minzoom: 12,
+      id: SLOPE_LAYER,
+      type: "fill",
+      source: SLOPE_SOURCE,
       paint: {
-        "line-width": [
-          'interpolate', ['linear'], ['zoom'],
-          10, 1, 12, 2, 15, 5, 16, 5, 20, 10,
-        ],
-        "line-color": buildColorExpression(maxGrade) as any,
-        'line-emissive-strength': 0.8,
-        'line-opacity': 0.8,
+        "fill-color": buildFillColor(maxSlope) as any,
+        "fill-opacity": 0.4,
+        "fill-antialias": false,
       },
-    });
+    }, beforeId);
   }
 }
 
-function App() {
-  const [maxGradeTarget, setMaxGradeTarget] = useState(MIN_SCALE);
-  const maxGrade = useSpring(maxGradeTarget);
-  const [progress, setProgress] = useState<{ processed: number; total: number } | null>(null);
-  const mapRef = useRef<MapRef>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const computingRef = useRef(false);
-  const readyRef = useRef(false);
-  const storeRef = useRef(new GradientStore());
+function roundZoom(z: number): number {
+  return Math.round(z * 100) / 100;
+}
 
-  const colorExpr = useMemo(() => buildColorExpression(maxGrade), [maxGrade]);
+function App() {
+  const [maxSlope, setMaxSlope] = useState(MIN_SCALE);
+  const [remaining, setRemaining] = useState<number | null>(null);
+  const mapRef = useRef<MapRef>(null);
+  const storeRef = useRef(new SlopeStore());
+  const maxSlopeRef = useRef(maxSlope);
+  maxSlopeRef.current = maxSlope;
 
   useEffect(() => {
     const map = mapRef.current?.getMap();
-    if (map && map.getLayer(GRADIENT_LAYER)) {
-      map.setPaintProperty(GRADIENT_LAYER, "line-color", colorExpr as any);
-    }
-  }, [colorExpr]);
+    if (!map || !map.getLayer(SLOPE_LAYER)) return;
+    map.setPaintProperty(SLOPE_LAYER, "fill-color", buildFillColor(maxSlope) as any);
+  }, [maxSlope]);
 
-  const onMapLoad = useCallback(() => {
-    const map = mapRef.current?.getMap();
-    if (!map) return;
-    ensureRoadSource(map);
-    readyRef.current = true;
-  }, []);
+  useEffect(() => {
+    let alive = true;
+    let lastZoom: number | null = null;
+    let zoomChangedAt = 0;
 
-  const updateGradients = useCallback(() => {
-    if (!readyRef.current || computingRef.current) return;
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(async () => {
-      const map = mapRef.current?.getMap();
-      if (!map || !map.isStyleLoaded()) return;
-      if (map.getZoom() < 11) return;
+    async function loop() {
+      while (alive) {
+        const map = mapRef.current?.getMap();
+        if (!map || !map.isStyleLoaded()) {
+          await sleep(200);
+          continue;
+        }
 
-      ensureRoadSource(map);
-      ensureGradientLayer(map, maxGradeTarget);
+        const zoom = roundZoom(map.getZoom());
 
-      computingRef.current = true;
-      const src = map.getSource(GRADIENT_SOURCE) as mapboxgl.GeoJSONSource | undefined;
-      const store = storeRef.current;
+        if (zoom < 10) {
+          await sleep(200);
+          continue;
+        }
 
-      try {
-        await computeGradients(map, store, {
-          onProgress(processed, total) {
-            setProgress({ processed, total });
-          },
-          onFlush(fc) {
-            if (src) src.setData(fc);
-          },
-        });
-        setProgress(null);
+        if (lastZoom !== null && zoom !== lastZoom) {
+          storeRef.current = new SlopeStore();
+          zoomChangedAt = Date.now();
+          const src = map.getSource(SLOPE_SOURCE) as mapboxgl.GeoJSONSource | undefined;
+          if (src) src.setData({ type: "FeatureCollection", features: [] });
+        }
+        lastZoom = zoom;
+
+        if (Date.now() - zoomChangedAt < ZOOM_SETTLE_MS) {
+          await sleep(50);
+          continue;
+        }
+
+        ensureSlopeLayer(map, maxSlopeRef.current);
 
         const bounds = map.getBounds()!;
-        const grades: number[] = [];
-        for (const f of store.segments) {
-          const grade = f.properties?.grade;
-          if (typeof grade !== "number" || grade <= 0) continue;
-          const c = f.geometry.coordinates[0];
-          if (c[0] >= bounds.getWest() && c[0] <= bounds.getEast() &&
-            c[1] >= bounds.getSouth() && c[1] <= bounds.getNorth()) {
-            grades.push(grade);
+        const canvas = map.getCanvas();
+        const store = storeRef.current;
+
+        const { processed, remaining: rem } = await processTick(
+          {
+            west: bounds.getWest(),
+            east: bounds.getEast(),
+            north: bounds.getNorth(),
+            south: bounds.getSouth(),
+          },
+          canvas.width / devicePixelRatio,
+          canvas.height / devicePixelRatio,
+          store,
+        );
+
+        if (processed > 0) {
+          const src = map.getSource(SLOPE_SOURCE) as mapboxgl.GeoJSONSource | undefined;
+          if (src) src.setData(store.toFeatureCollection());
+          setRemaining(rem);
+
+          if (rem === 0) {
+            updateScale(store, bounds, map);
           }
+        } else {
+          setRemaining(null);
+          await sleep(150);
         }
-        if (!grades.length) return;
 
-        grades.sort((a, b) => a - b);
-        const pPercentile = grades[Math.floor(grades.length * PERCENTILE)];
-        setMaxGradeTarget(Math.min(MAX_SCALE, Math.max(MIN_SCALE, pPercentile)));
-      } finally {
-        computingRef.current = false;
+        await sleep(0);
       }
-    }, 300);
-  }, [maxGradeTarget]);
+    }
 
-  const pct = progress
-    ? Math.round((progress.processed / progress.total) * 100)
-    : null;
+    function updateScale(store: SlopeStore, bounds: mapboxgl.LngLatBounds, _map: mapboxgl.Map) {
+      const visibleSlopes: number[] = [];
+      for (const f of store.cells.values()) {
+        const s = f.properties?.slope;
+        if (typeof s !== "number" || s <= 0) continue;
+        const coord = f.geometry.coordinates[0][0];
+        if (coord[0] >= bounds.getWest() && coord[0] <= bounds.getEast() &&
+          coord[1] >= bounds.getSouth() && coord[1] <= bounds.getNorth()) {
+          visibleSlopes.push(s);
+        }
+      }
+      if (!visibleSlopes.length) return;
+      visibleSlopes.sort((a, b) => a - b);
+      const pVal = visibleSlopes[Math.floor(visibleSlopes.length * PERCENTILE)];
+      setMaxSlope(Math.min(MAX_SCALE, Math.max(MIN_SCALE, pVal)));
+    }
+
+    loop();
+    return () => { alive = false; };
+  }, []);
+
+  const totalVisible = remaining !== null ? remaining : null;
 
   return (
     <div style={{ width: "100vw", height: "100vh" }}>
@@ -166,8 +181,20 @@ function App() {
         style={{ width: "100%", height: "100%" }}
         projection="globe"
         mapStyle={mapStyle}
-        onLoad={onMapLoad}
-        onIdle={updateGradients}
+        terrain={{ source: "mapbox-dem", exaggeration: 1 }}
+        onLoad={() => {
+          const map = mapRef.current?.getMap();
+          if (!map) return;
+          if (!map.getSource("mapbox-dem")) {
+            map.addSource("mapbox-dem", {
+              type: "raster-dem",
+              url: "mapbox://mapbox.mapbox-terrain-dem-v1",
+              tileSize: 512,
+              maxzoom: 14,
+            });
+          }
+          map.setTerrain({ source: "mapbox-dem", exaggeration: 1 });
+        }}
       />
       <div style={{
         position: "fixed",
@@ -196,17 +223,17 @@ function App() {
           height: 160,
         }}>
           {COLORS.slice().reverse().map((_, i, arr) => {
-            const grade = (maxGrade / (arr.length - 1)) * (arr.length - 1 - i);
+            const slope = (maxSlope / (arr.length - 1)) * (arr.length - 1 - i);
             return (
               <span key={i} style={{ color: "#ffffffcc", fontSize: 11, lineHeight: 1 }}>
-                {grade.toFixed(0)}%
+                {slope.toFixed(0)}%
               </span>
             );
           })}
         </div>
       </div>
 
-      {pct !== null && (
+      {totalVisible !== null && totalVisible > 0 && (
         <div style={{
           position: "fixed",
           bottom: 24,
@@ -217,22 +244,19 @@ function App() {
           padding: "10px 20px 8px",
           borderRadius: 10,
           zIndex: 10,
-          minWidth: 260,
+          minWidth: 220,
         }}>
-          <div style={{ color: "#ffffffcc", fontSize: 12, marginBottom: 6 }}>
-            Computing grades — {progress!.processed} / {progress!.total} roads
+          <div style={{ color: "#ffffffcc", fontSize: 12 }}>
+            {totalVisible.toLocaleString()} cells remaining
           </div>
-          <Progress
-            percent={pct}
-            strokeColor="#1677ff"
-            trailColor="rgba(255,255,255,0.12)"
-            showInfo={false}
-            size="small"
-          />
         </div>
       )}
     </div>
   )
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 export default App
