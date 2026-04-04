@@ -1,8 +1,8 @@
 import type { Feature, FeatureCollection, Polygon } from "geojson";
 import { eleAtCoord, prefetchTilesForBounds } from "./elevation.ts";
 
-const NEIGHBOR_OFFSET_M = 8;
-const GRID_SPACING_PX = 3;
+const NEIGHBOR_OFFSET_M = 2;
+const GRID_SPACING_PX = 2;
 const BATCH_SIZE = 30_000;
 
 const METERS_PER_DEG_LAT = 111_320;
@@ -20,6 +20,8 @@ export interface Bounds {
 
 export class SlopeStore {
   cells = new Map<string, Feature<Polygon>>();
+  /** Grid keys classified as water (skipped, not in `cells`). */
+  waterCells = new Set<string>();
   lngStep = 0;
   latStep = 0;
   gridLocked = false;
@@ -27,6 +29,7 @@ export class SlopeStore {
 
   clear() {
     this.cells.clear();
+    this.waterCells.clear();
     this.lngStep = 0;
     this.latStep = 0;
     this.gridLocked = false;
@@ -38,10 +41,29 @@ export class SlopeStore {
     const east = bounds.east + margin;
     const south = bounds.south - margin;
     const north = bounds.north + margin;
+    const { lngStep, latStep } = this;
     for (const [key, f] of this.cells) {
       const [lng, lat] = f.geometry.coordinates[0][0];
       if (lng < west || lng > east || lat < south || lat > north) {
         this.cells.delete(key);
+      }
+    }
+    if (lngStep > 0 && latStep > 0) {
+      for (const key of [...this.waterCells]) {
+        const [cs, rs] = key.split("_");
+        const c = Number(cs);
+        const r = Number(rs);
+        if (!Number.isFinite(c) || !Number.isFinite(r)) {
+          this.waterCells.delete(key);
+          continue;
+        }
+        const w = c * lngStep;
+        const s = r * latStep;
+        const e = w + lngStep;
+        const n = s + latStep;
+        if (e < west || w > east || n < south || s > north) {
+          this.waterCells.delete(key);
+        }
       }
     }
   }
@@ -75,7 +97,7 @@ function getUncomputedCells(
   for (let r = rowMin; r < rowMax; r++) {
     for (let c = colMin; c < colMax; c++) {
       const key = `${c}_${r}`;
-      if (!store.cells.has(key)) {
+      if (!store.cells.has(key) && !store.waterCells.has(key)) {
         result.push([c, r]);
       }
     }
@@ -151,11 +173,14 @@ export interface TickResult {
  * Process one batch of visible but uncomputed cells.
  * Returns how many were processed and how many remain.
  */
+export type WaterPredicate = (lng: number, lat: number) => boolean;
+
 export async function processTick(
   bounds: Bounds,
   viewWidth: number,
   viewHeight: number,
   store: SlopeStore,
+  isOverWater?: WaterPredicate,
 ): Promise<TickResult> {
   if (!store.gridLocked) {
     const [lngStep, latStep] = computeCellSize(viewWidth, viewHeight, bounds);
@@ -178,8 +203,17 @@ export async function processTick(
   const batch = uncomputed.slice(0, BATCH_SIZE);
 
   for (const [c, r] of batch) {
+    const key = `${c}_${r}`;
+    const w = c * lngStep;
+    const s = r * latStep;
+    const lng = w + lngStep / 2;
+    const lat = s + latStep / 2;
+    if (isOverWater?.(lng, lat)) {
+      store.waterCells.add(key);
+      continue;
+    }
     const { feature } = await processCell(c, r, lngStep, latStep);
-    store.cells.set(`${c}_${r}`, feature);
+    store.cells.set(key, feature);
   }
 
   return { processed: batch.length, remaining: uncomputed.length - batch.length };

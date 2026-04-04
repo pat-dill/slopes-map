@@ -5,16 +5,19 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import { mapboxToken } from "./config.ts";
 import { useEffect, useRef, useState } from "react";
 import { processTick, SlopeStore } from "./computeSlopes.ts";
+import { buildWaterIndex, isPointOverWater, waterVectorSourceId } from "./waterIndex.ts";
 
 
-const mapStyle = "mapbox://styles/mapbox/light-v11";
+const mapStyle = "mapbox://styles/mapbox/dark-v11";
 
 const SLOPE_SOURCE = "slope-data";
 const SLOPE_LAYER = "slope-fill";
 
+/** Below this zoom, slope cells are not computed and the overlay is cleared (the map can still zoom out). */
+const MIN_RENDER_ZOOM = 9;
 const MIN_SCALE = 12;
 const MAX_SCALE = 50;
-const PERCENTILE = 0.99;
+const PERCENTILE = 0.985;
 const ZOOM_SETTLE_MS = 400;
 const COLORS = ["#00ff00", "#ffff00", "#ff0000", "#ff00ff", "#ffffff"];
 
@@ -28,10 +31,17 @@ function buildFillColor(maxSlope: number) {
   ];
 }
 
-function findFirstRoadLayer(map: mapboxgl.Map): string | undefined {
+/** First style layer (bottom-up order) that should paint above the slope: roads, bridges, tunnels, buildings. */
+function findFirstLayerAboveSlope(map: mapboxgl.Map): string | undefined {
   for (const layer of map.getStyle().layers) {
-    if (layer.id.startsWith("road") || layer.id.startsWith("tunnel") || layer.id.startsWith("bridge")) {
-      return layer.id;
+    const id = layer.id;
+    if (
+      id.startsWith("road") ||
+      id.startsWith("tunnel") ||
+      id.startsWith("bridge") ||
+      id.startsWith("building")
+    ) {
+      return id;
     }
   }
   return undefined;
@@ -45,14 +55,14 @@ function ensureSlopeLayer(map: mapboxgl.Map, maxSlope: number) {
     });
   }
   if (!map.getLayer(SLOPE_LAYER)) {
-    const beforeId = findFirstRoadLayer(map);
+    const beforeId = findFirstLayerAboveSlope(map);
     map.addLayer({
       id: SLOPE_LAYER,
       type: "fill",
       source: SLOPE_SOURCE,
       paint: {
         "fill-color": buildFillColor(maxSlope) as any,
-        "fill-opacity": 0.4,
+        "fill-opacity": 0.9,
         "fill-antialias": false,
       },
     }, beforeId);
@@ -92,7 +102,14 @@ function App() {
 
         const zoom = roundZoom(map.getZoom());
 
-        if (zoom < 10) {
+        if (zoom < MIN_RENDER_ZOOM) {
+          if (lastZoom === null || lastZoom >= MIN_RENDER_ZOOM) {
+            storeRef.current = new SlopeStore();
+            const src = map.getSource(SLOPE_SOURCE) as mapboxgl.GeoJSONSource | undefined;
+            if (src) src.setData({ type: "FeatureCollection", features: [] });
+            setRemaining(null);
+          }
+          lastZoom = zoom;
           await sleep(200);
           continue;
         }
@@ -116,6 +133,16 @@ function App() {
         const canvas = map.getCanvas();
         const store = storeRef.current;
 
+        const vectorId = waterVectorSourceId(map);
+        if (vectorId && !map.isSourceLoaded(vectorId)) {
+          await sleep(100);
+          continue;
+        }
+
+        const waterIndex = buildWaterIndex(map);
+        const isOverWater = (lng: number, lat: number) =>
+          isPointOverWater(lng, lat, waterIndex);
+
         const { processed, remaining: rem } = await processTick(
           {
             west: bounds.getWest(),
@@ -126,6 +153,7 @@ function App() {
           canvas.width / devicePixelRatio,
           canvas.height / devicePixelRatio,
           store,
+          isOverWater,
         );
 
         if (processed > 0) {
