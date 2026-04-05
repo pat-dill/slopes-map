@@ -6,7 +6,6 @@ import { mapboxToken } from "./config.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { computeGradients, GradientStore } from "./computeGradients.ts";
 import { Progress } from "antd";
-import { useSpring } from "pat-web-utils";
 
 const mapStyle = "mapbox://styles/paricdil/cme3ipbul01pr01s24ymeep2j";
 
@@ -14,19 +13,29 @@ const GRADIENT_SOURCE = "gradient-data";
 const GRADIENT_LAYER = "gradient-lines";
 const ROAD_QUERY_SOURCE = "streets-v8";
 
-const MIN_SCALE = 6;
 const MAX_SCALE = 25;
-const PERCENTILE = 0.975;
+/** Top of the scale uses this percentile of visible grades (not 100%). */
+const HIGH_PERCENTILE = 0.985;
+/** One stop per color: P0, P30, P60, P90, P98.5 — scale position matches percentile except the cap above. */
+const STOP_PERCENTILES = [0, 0.4, 0.667, 0.9, HIGH_PERCENTILE] as const;
 const COLORS = ["#00ff00", "#ffff00", "#ff0000", "#ff00ff", "#ffffff"];
 
-function buildColorExpression(maxGrade: number) {
-  const step = maxGrade / (COLORS.length - 1);
-  return [
-    "interpolate",
-    ["linear"],
-    ["get", "grade"],
-    ...COLORS.flatMap((color, i) => [step * i, color]),
-  ];
+function percentileOfSorted(sorted: number[], p: number): number {
+  const n = sorted.length;
+  if (n === 0) return 0;
+  if (n === 1) return sorted[0]!;
+  const x = p * (n - 1);
+  const lo = Math.floor(x);
+  const hi = Math.ceil(x);
+  const a = sorted[lo]!;
+  if (lo === hi) return a;
+  const b = sorted[hi]!;
+  return a + (b - a) * (x - lo);
+}
+
+function buildColorExpression(stops: readonly number[]) {
+  const pairs = COLORS.flatMap((color, i) => [stops[i]!, color]);
+  return ["interpolate", ["linear"], ["get", "grade"], ...pairs];
 }
 
 const ROAD_LOADER_LAYER = "road-loader";
@@ -49,7 +58,7 @@ function ensureRoadSource(map: mapboxgl.Map) {
   }
 }
 
-function ensureGradientLayer(map: mapboxgl.Map, maxGrade: number) {
+function ensureGradientLayer(map: mapboxgl.Map, colorStops: readonly number[]) {
   if (!map.getSource(GRADIENT_SOURCE)) {
     map.addSource(GRADIENT_SOURCE, {
       type: "geojson",
@@ -67,7 +76,7 @@ function ensureGradientLayer(map: mapboxgl.Map, maxGrade: number) {
           'interpolate', ['linear'], ['zoom'],
           10, 1, 12, 2, 15, 5, 16, 5, 20, 10,
         ],
-        "line-color": buildColorExpression(maxGrade) as any,
+        "line-color": buildColorExpression(colorStops) as any,
         'line-emissive-strength': 0.8,
         'line-opacity': 0.8,
       },
@@ -75,17 +84,20 @@ function ensureGradientLayer(map: mapboxgl.Map, maxGrade: number) {
   }
 }
 
+const INITIAL_STOPS: number[] = [0, 5, 10, 15, 20];
+
 function App() {
-  const [maxGradeTarget, setMaxGradeTarget] = useState(MIN_SCALE);
-  const maxGrade = useSpring(maxGradeTarget);
+  const [colorStops, setColorStops] = useState<number[]>(INITIAL_STOPS);
   const [progress, setProgress] = useState<{ processed: number; total: number } | null>(null);
   const mapRef = useRef<MapRef>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const computingRef = useRef(false);
   const readyRef = useRef(false);
   const storeRef = useRef(new GradientStore());
+  const colorStopsRef = useRef(colorStops);
+  colorStopsRef.current = colorStops;
 
-  const colorExpr = useMemo(() => buildColorExpression(maxGrade), [maxGrade]);
+  const colorExpr = useMemo(() => buildColorExpression(colorStops), [colorStops]);
 
   useEffect(() => {
     const map = mapRef.current?.getMap();
@@ -110,7 +122,7 @@ function App() {
       if (map.getZoom() < 11) return;
 
       ensureRoadSource(map);
-      ensureGradientLayer(map, maxGradeTarget);
+      ensureGradientLayer(map, colorStopsRef.current);
 
       computingRef.current = true;
       const src = map.getSource(GRADIENT_SOURCE) as mapboxgl.GeoJSONSource | undefined;
@@ -141,13 +153,18 @@ function App() {
         if (!grades.length) return;
 
         grades.sort((a, b) => a - b);
-        const pPercentile = grades[Math.floor(grades.length * PERCENTILE)];
-        setMaxGradeTarget(Math.min(MAX_SCALE, Math.max(MIN_SCALE, pPercentile)));
+        const next = STOP_PERCENTILES.map((p) =>
+          Math.min(MAX_SCALE, Math.max(0, percentileOfSorted(grades, p))),
+        );
+        for (let i = 1; i < next.length; i++) {
+          if (next[i]! < next[i - 1]!) next[i] = next[i - 1]!;
+        }
+        setColorStops(next);
       } finally {
         computingRef.current = false;
       }
     }, 300);
-  }, [maxGradeTarget]);
+  }, []);
 
   const pct = progress
     ? Math.round((progress.processed / progress.total) * 100)
@@ -196,10 +213,11 @@ function App() {
           height: 160,
         }}>
           {COLORS.slice().reverse().map((_, i, arr) => {
-            const grade = (maxGrade / (arr.length - 1)) * (arr.length - 1 - i);
+            const stopIndex = arr.length - 1 - i;
+            const grade = colorStops[stopIndex] ?? 0;
             return (
               <span key={i} style={{ color: "#ffffffcc", fontSize: 11, lineHeight: 1 }}>
-                {grade.toFixed(0)}%
+                {grade.toFixed(1)}%
               </span>
             );
           })}

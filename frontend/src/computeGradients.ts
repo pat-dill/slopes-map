@@ -3,7 +3,7 @@ import type { Map as MapboxMap } from "mapbox-gl";
 import type { Feature, FeatureCollection, LineString } from "geojson";
 import { eleAtCoord, prefetchTilesForBounds } from "./elevation.ts";
 
-const MAX_SEGMENT_METERS = 50;
+const MAX_SEGMENT_METERS = 30;
 const MIN_SEGMENT_METERS = 15;
 const ROAD_QUERY_SOURCE = "streets-v8";
 const FLUSH_INTERVAL = 25;
