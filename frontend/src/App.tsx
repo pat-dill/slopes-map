@@ -3,9 +3,10 @@ import Map from "react-map-gl/mapbox";
 import type { MapRef } from "react-map-gl/mapbox";
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { mapboxToken } from "./config.ts";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { processTick, SlopeStore } from "./computeSlopes.ts";
 import { buildWaterIndex, isPointOverWater, waterVectorSourceId } from "./waterIndex.ts";
+import { eleAtCoord } from "./elevation.ts";
 
 
 const mapStyle = "mapbox://styles/mapbox/dark-v11";
@@ -19,7 +20,7 @@ const MAX_SCALE = 100;
 /** Top of the scale uses this percentile of visible slopes (not 100%). */
 const HIGH_PERCENTILE = 0.985;
 /** One stop per color: P0, P20, P40, P60, P98.5 — scale position matches percentile except the cap above. */
-const STOP_PERCENTILES = [0, 0.25, 0.5, 0.75, HIGH_PERCENTILE] as const;
+const STOP_PERCENTILES = [0, 0.3, 0.6, 0.9, HIGH_PERCENTILE] as const;
 const ZOOM_SETTLE_MS = 400;
 const COLORS = ["#00ff00", "#ffff00", "#ff0000", "#ff00ff", "#ffffff"];
 
@@ -85,10 +86,21 @@ function roundZoom(z: number): number {
 
 const INITIAL_STOPS: number[] = [0, 5, 10, 15, 20];
 
+/** Meters above mean sea level → feet (international foot). */
+const M_TO_FT = 3.280839895013123;
+
+type HoverElevation =
+  | { ok: true; meters: number }
+  /** `pending`: fetching DEM via API (Mapbox often returns null from queryTerrainElevation until GPU tiles load). */
+  | { ok: false; pending?: boolean };
+
 function App() {
   const [colorStops, setColorStops] = useState<number[]>(INITIAL_STOPS);
   const [remaining, setRemaining] = useState<number | null>(null);
+  const [hoverElevation, setHoverElevation] = useState<HoverElevation | null>(null);
   const mapRef = useRef<MapRef>(null);
+  const hoverElevSeqRef = useRef(0);
+  const hoverElevDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const storeRef = useRef(new SlopeStore());
   const colorStopsRef = useRef(colorStops);
   colorStopsRef.current = colorStops;
@@ -211,6 +223,59 @@ function App() {
     return () => { alive = false; };
   }, []);
 
+  useEffect(() => () => {
+    if (hoverElevDebounceRef.current) clearTimeout(hoverElevDebounceRef.current);
+  }, []);
+
+  const HOVER_DEM_DEBOUNCE_MS = 55;
+
+  const onMapMouseMove = useCallback((e: mapboxgl.MapLayerMouseEvent) => {
+    const map = mapRef.current?.getMap();
+    const { lngLat } = e;
+    const lat = lngLat.lat;
+    const lng = lngLat.lng;
+
+    const syncM = map?.queryTerrainElevation(lngLat);
+    if (typeof syncM === "number") {
+      if (hoverElevDebounceRef.current) {
+        clearTimeout(hoverElevDebounceRef.current);
+        hoverElevDebounceRef.current = null;
+      }
+      hoverElevSeqRef.current += 1;
+      setHoverElevation({ ok: true, meters: syncM });
+      return;
+    }
+
+    if (hoverElevDebounceRef.current) clearTimeout(hoverElevDebounceRef.current);
+
+    const seq = ++hoverElevSeqRef.current;
+    setHoverElevation({ ok: false, pending: true });
+
+    hoverElevDebounceRef.current = setTimeout(() => {
+      hoverElevDebounceRef.current = null;
+      eleAtCoord(lat, lng).then((m) => {
+        if (seq !== hoverElevSeqRef.current) return;
+        if (typeof m === "number" && Number.isFinite(m)) {
+          setHoverElevation({ ok: true, meters: m });
+        } else {
+          setHoverElevation({ ok: false });
+        }
+      }).catch(() => {
+        if (seq !== hoverElevSeqRef.current) return;
+        setHoverElevation({ ok: false });
+      });
+    }, HOVER_DEM_DEBOUNCE_MS);
+  }, []);
+
+  const onMapMouseOut = useCallback(() => {
+    if (hoverElevDebounceRef.current) {
+      clearTimeout(hoverElevDebounceRef.current);
+      hoverElevDebounceRef.current = null;
+    }
+    hoverElevSeqRef.current += 1;
+    setHoverElevation(null);
+  }, []);
+
   const totalVisible = remaining !== null ? remaining : null;
 
   return (
@@ -240,6 +305,8 @@ function App() {
           }
           map.setTerrain({ source: "mapbox-dem", exaggeration: 1 });
         }}
+        onMouseMove={onMapMouseMove}
+        onMouseOut={onMapMouseOut}
       />
       <div style={{
         position: "fixed",
@@ -274,6 +341,42 @@ function App() {
           ))}
         </div>
       </div>
+
+      {hoverElevation !== null && (
+        <div style={{
+          position: "fixed",
+          left: 16,
+          bottom: 24,
+          background: "rgba(0, 0, 0, 0.75)",
+          backdropFilter: "blur(12px)",
+          borderRadius: 10,
+          padding: "10px 14px",
+          zIndex: 10,
+          minWidth: 140,
+        }}>
+          <div style={{ color: "#ffffff99", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>
+            Elevation
+          </div>
+          {hoverElevation.ok ? (
+            <>
+              <div style={{ color: "#fff", fontSize: 14, fontVariantNumeric: "tabular-nums" }}>
+                {(hoverElevation.meters * M_TO_FT).toLocaleString(undefined, { maximumFractionDigits: 0 })} ft
+              </div>
+              <div style={{ color: "#ffffffcc", fontSize: 12, fontVariantNumeric: "tabular-nums", marginTop: 2 }}>
+                {hoverElevation.meters.toLocaleString(undefined, { maximumFractionDigits: 1 })} m
+              </div>
+            </>
+          ) : hoverElevation.pending ? (
+            <div style={{ color: "#ffffffaa", fontSize: 13 }}>
+              …
+            </div>
+          ) : (
+            <div style={{ color: "#ffffffaa", fontSize: 13 }}>
+              —
+            </div>
+          )}
+        </div>
+      )}
 
       {totalVisible !== null && totalVisible > 0 && (
         <div style={{
