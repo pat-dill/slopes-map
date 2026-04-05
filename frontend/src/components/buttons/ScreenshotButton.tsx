@@ -1,5 +1,4 @@
 import clsx from "clsx";
-import React from "react";
 import html2canvas from "html2canvas";
 import download from "downloadjs";
 
