@@ -85,6 +85,22 @@ function ensureRoadSource(map: mapboxgl.Map) {
   }
 }
 
+/** First style layer (bottom-up order) that should paint above the slope: roads, bridges, tunnels, buildings. */
+function findFirstLayerAboveSlope(map: mapboxgl.Map): string | undefined {
+  for (const layer of map.getStyle().layers) {
+    const id = layer.id;
+    if (
+      id.startsWith("road") ||
+      id.startsWith("tunnel") ||
+      id.startsWith("bridge") ||
+      id.startsWith("building")
+    ) {
+      return id;
+    }
+  }
+  return undefined;
+}
+
 function ensureGradientLayer(map: mapboxgl.Map, gradeStops: readonly number[]) {
   if (!map.getSource(GRADIENT_SOURCE)) {
     map.addSource(GRADIENT_SOURCE, {
@@ -109,21 +125,6 @@ function ensureGradientLayer(map: mapboxgl.Map, gradeStops: readonly number[]) {
       },
     });
   }
-}
-
-function findFirstLayerAboveSlope(map: mapboxgl.Map): string | undefined {
-  for (const layer of map.getStyle().layers) {
-    const id = layer.id;
-    if (
-      id.startsWith("road") ||
-      id.startsWith("tunnel") ||
-      id.startsWith("bridge") ||
-      id.startsWith("building")
-    ) {
-      return id;
-    }
-  }
-  return undefined;
 }
 
 function ensureSlopeLayer(map: mapboxgl.Map, slopeStops: readonly number[]) {
@@ -158,6 +159,7 @@ function sleep(ms: number): Promise<void> {
 
 type HoverElevation =
   | { ok: true; meters: number }
+  /** `pending`: fetching DEM via API (Mapbox often returns null from queryTerrainElevation until GPU tiles load). */
   | { ok: false; pending?: boolean };
 
 function App() {
@@ -484,8 +486,6 @@ function App() {
   const legendStops = viewMode === "roads" ? gradeStops : slopeStops;
   const legendTitle = viewMode === "roads" ? "Grade" : "Slope";
 
-  const totalVisible = remaining !== null ? remaining : null;
-
   return (
     <div style={{ width: "100vw", height: "100vh" }}>
       <Map
@@ -656,7 +656,7 @@ function App() {
         </div>
       )}
 
-      {viewMode === "terrain" && totalVisible !== null && totalVisible > 0 && (
+      {viewMode === "terrain" && remaining !== null && remaining > 0 && (
         <div style={{
           position: "fixed",
           bottom: 24,
@@ -670,7 +670,7 @@ function App() {
           minWidth: 220,
         }}>
           <div style={{ color: "#ffffffcc", fontSize: 12 }}>
-            {totalVisible.toLocaleString()} cells remaining
+            {remaining.toLocaleString()} cells remaining
           </div>
         </div>
       )}

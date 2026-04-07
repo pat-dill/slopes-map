@@ -1,8 +1,7 @@
 import clsx from "clsx";
-import React, { useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useAnimationFrame } from "pat-web-utils";
 import { useCopyToClipboard } from "usehooks-ts";
-import { useLocation } from "react-router-dom";
 
 export default function ShareButton({ url, className }: { url?: string; className?: string }) {
     const [copiedAt, setCopiedAt] = useState(-Infinity);
