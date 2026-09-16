@@ -1,8 +1,14 @@
 import { mapboxToken } from "./config.ts";
 
-const DEM_ZOOM = 14;
+const MAX_DEM_ZOOM = 14;
+const MIN_DEM_ZOOM = 5;
 const TILE_SIZE = 512;
 const TILESET = "mapbox.mapbox-terrain-dem-v1";
+
+/** Clamp map zoom to a sensible DEM tile zoom (fewer tiles when zoomed out). */
+export function demZoomForMapZoom(mapZoom: number): number {
+  return Math.min(MAX_DEM_ZOOM, Math.max(MIN_DEM_ZOOM, Math.round(mapZoom)));
+}
 
 const tileCache = new Map<string, Float32Array>();
 const inflight = new Map<string, Promise<Float32Array>>();
@@ -52,9 +58,10 @@ async function fetchHeightmap(tx: number, ty: number, tz: number): Promise<Float
     }
 
     tileCache.set(key, heightmap);
-    inflight.delete(key);
     return heightmap;
-  })();
+  })().finally(() => {
+    inflight.delete(key);
+  });
 
   inflight.set(key, promise);
   return promise;
@@ -64,12 +71,12 @@ function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
 
-export async function eleAtCoord(lat: number, lon: number): Promise<number> {
-  const [tx, ty] = coordToTile(lat, lon, DEM_ZOOM);
-  const heightmap = await fetchHeightmap(tx, ty, DEM_ZOOM);
+export async function eleAtCoord(lat: number, lon: number, demZoom: number = MAX_DEM_ZOOM): Promise<number> {
+  const [tx, ty] = coordToTile(lat, lon, demZoom);
+  const heightmap = await fetchHeightmap(tx, ty, demZoom);
 
-  const [tlLat, tlLon] = tileToCoord(tx, ty, DEM_ZOOM);
-  const [brLat, brLon] = tileToCoord(tx + 1, ty + 1, DEM_ZOOM);
+  const [tlLat, tlLon] = tileToCoord(tx, ty, demZoom);
+  const [brLat, brLon] = tileToCoord(tx + 1, ty + 1, demZoom);
 
   let xPx = ((lon - tlLon) / (brLon - tlLon)) * TILE_SIZE;
   let yPx = ((lat - tlLat) / (brLat - tlLat)) * TILE_SIZE;
@@ -92,15 +99,16 @@ export async function eleAtCoord(lat: number, lon: number): Promise<number> {
 }
 
 export async function prefetchTilesForBounds(
-  bounds: { west: number; east: number; north: number; south: number }
+  bounds: { west: number; east: number; north: number; south: number },
+  demZoom: number = MAX_DEM_ZOOM,
 ): Promise<void> {
-  const [minTx, minTy] = coordToTile(bounds.north, bounds.west, DEM_ZOOM);
-  const [maxTx, maxTy] = coordToTile(bounds.south, bounds.east, DEM_ZOOM);
+  const [minTx, minTy] = coordToTile(bounds.north, bounds.west, demZoom);
+  const [maxTx, maxTy] = coordToTile(bounds.south, bounds.east, demZoom);
 
   const promises: Promise<Float32Array>[] = [];
   for (let tx = minTx; tx <= maxTx; tx++) {
     for (let ty = minTy; ty <= maxTy; ty++) {
-      promises.push(fetchHeightmap(tx, ty, DEM_ZOOM));
+      promises.push(fetchHeightmap(tx, ty, demZoom));
     }
   }
   await Promise.all(promises);

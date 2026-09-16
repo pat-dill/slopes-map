@@ -105,7 +105,7 @@ function getUncomputedCells(
   return result;
 }
 
-async function ensurePrefetched(bounds: Bounds, lngStep: number, latStep: number, store: SlopeStore) {
+async function ensurePrefetched(bounds: Bounds, lngStep: number, latStep: number, store: SlopeStore, demZoom?: number) {
   const padLng = lngStep * 2;
   const padLat = latStep * 2;
   const needed = {
@@ -122,13 +122,14 @@ async function ensurePrefetched(bounds: Bounds, lngStep: number, latStep: number
     return;
   }
 
-  await prefetchTilesForBounds(needed);
+  await prefetchTilesForBounds(needed, demZoom);
   store.prefetchedBounds = needed;
 }
 
 async function processCell(
   col: number, row: number,
   lngStep: number, latStep: number,
+  demZoom?: number,
 ): Promise<{ feature: Feature<Polygon>; slope: number }> {
   const w = col * lngStep;
   const s = row * latStep;
@@ -141,10 +142,10 @@ async function processCell(
   const dLon = NEIGHBOR_OFFSET_M / metersPerDegLon(lat);
 
   const [eleN, eleS, eleE, eleW] = await Promise.all([
-    eleAtCoord(lat + dLat, lng),
-    eleAtCoord(lat - dLat, lng),
-    eleAtCoord(lat, lng + dLon),
-    eleAtCoord(lat, lng - dLon),
+    eleAtCoord(lat + dLat, lng, demZoom),
+    eleAtCoord(lat - dLat, lng, demZoom),
+    eleAtCoord(lat, lng + dLon, demZoom),
+    eleAtCoord(lat, lng - dLon, demZoom),
   ]);
 
   const dzdx = (eleE - eleW) / (2 * NEIGHBOR_OFFSET_M);
@@ -181,6 +182,7 @@ export async function processTick(
   viewHeight: number,
   store: SlopeStore,
   isOverWater?: WaterPredicate,
+  demZoom?: number,
 ): Promise<TickResult> {
   if (!store.gridLocked) {
     const [lngStep, latStep] = computeCellSize(viewWidth, viewHeight, bounds);
@@ -198,7 +200,7 @@ export async function processTick(
   const uncomputed = getUncomputedCells(bounds, lngStep, latStep, store);
   if (!uncomputed.length) return { processed: 0, remaining: 0 };
 
-  await ensurePrefetched(bounds, lngStep, latStep, store);
+  await ensurePrefetched(bounds, lngStep, latStep, store, demZoom);
 
   const batch = uncomputed.slice(0, BATCH_SIZE);
 
@@ -212,7 +214,7 @@ export async function processTick(
       store.waterCells.add(key);
       continue;
     }
-    const { feature } = await processCell(c, r, lngStep, latStep);
+    const { feature } = await processCell(c, r, lngStep, latStep, demZoom);
     store.cells.set(key, feature);
   }
 

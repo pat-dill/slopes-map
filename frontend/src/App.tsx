@@ -9,7 +9,7 @@ import { computeGradients, GradientStore } from "./computeGradients.ts";
 import { processTick, SlopeStore } from "./computeSlopes.ts";
 import { processHeightTick, HeightStore } from "./computeHeights.ts";
 import { buildWaterIndex, isPointOverWater, waterVectorSourceId } from "./waterIndex.ts";
-import { eleAtCoord, prefetchTilesForBounds } from "./elevation.ts";
+import { eleAtCoord, prefetchTilesForBounds, demZoomForMapZoom } from "./elevation.ts";
 import { LockOutlined, UnlockOutlined } from "@ant-design/icons";
 import { Button, Progress, Segmented } from "antd";
 
@@ -74,9 +74,10 @@ function percentileOfSorted(sorted: number[], p: number): number {
 async function sampleHeightmapPercentileRange(
   bounds: { west: number; east: number; north: number; south: number },
   isOverWater: (lng: number, lat: number) => boolean,
+  demZoom?: number,
 ): Promise<{ lowM: number; highM: number } | null> {
   const { west, east, north, south } = bounds;
-  await prefetchTilesForBounds(bounds);
+  await prefetchTilesForBounds(bounds, demZoom);
   const g = HEIGHTMAP_PREGRID;
   const latLngs: { lat: number; lng: number }[] = [];
   for (let j = 0; j < g; j++) {
@@ -86,7 +87,7 @@ async function sampleHeightmapPercentileRange(
       if (!isOverWater(lng, lat)) latLngs.push({ lat, lng });
     }
   }
-  const elevs = await Promise.all(latLngs.map(({ lat, lng }) => eleAtCoord(lat, lng)));
+  const elevs = await Promise.all(latLngs.map(({ lat, lng }) => eleAtCoord(lat, lng, demZoom)));
   const samples: number[] = [];
   for (const e of elevs) {
     if (typeof e === "number" && Number.isFinite(e)) samples.push(e);
@@ -305,7 +306,7 @@ function App() {
   const applyTerrainForViewMode = useCallback(() => {
     const map = mapRef.current?.getMap();
     if (!map || !map.isStyleLoaded()) return;
-    if (viewModeRef.current === "terrain" || viewModeRef.current === "heightmap") {
+    if (viewModeRef.current === "terrain") {
       ensureMapboxDemSource(map);
       map.setTerrain({ source: MAPBOX_DEM_SOURCE_ID, exaggeration: 1 });
     } else {
@@ -500,30 +501,35 @@ function App() {
         const isOverWater = (lng: number, lat: number) =>
           isPointOverWater(lng, lat, waterIndex);
 
-        const { processed, remaining: rem } = await processTick(
-          {
-            west: bounds.getWest(),
-            east: bounds.getEast(),
-            north: bounds.getNorth(),
-            south: bounds.getSouth(),
-          },
-          canvas.width / devicePixelRatio,
-          canvas.height / devicePixelRatio,
-          store,
-          isOverWater,
-        );
+        try {
+          const { processed, remaining: rem } = await processTick(
+            {
+              west: bounds.getWest(),
+              east: bounds.getEast(),
+              north: bounds.getNorth(),
+              south: bounds.getSouth(),
+            },
+            canvas.width / devicePixelRatio,
+            canvas.height / devicePixelRatio,
+            store,
+            isOverWater,
+            demZoomForMapZoom(zoom),
+          );
 
-        if (processed > 0) {
-          const src = map.getSource(SLOPE_SOURCE) as mapboxgl.GeoJSONSource | undefined;
-          if (src) src.setData(store.toFeatureCollection());
-          setRemaining(rem);
+          if (processed > 0) {
+            const src = map.getSource(SLOPE_SOURCE) as mapboxgl.GeoJSONSource | undefined;
+            if (src) src.setData(store.toFeatureCollection());
+            setRemaining(rem);
 
-          if (rem === 0) {
-            updateSlopeScale(store, bounds);
+            if (rem === 0) {
+              updateSlopeScale(store, bounds);
+            }
+          } else {
+            setRemaining(null);
+            await sleep(150);
           }
-        } else {
-          setRemaining(null);
-          await sleep(150);
+        } catch {
+          await sleep(500);
         }
 
         await sleep(0);
@@ -613,6 +619,7 @@ function App() {
                 south: bounds.getSouth(),
               },
               isOverWater,
+              demZoomForMapZoom(zoom),
             );
             if (sampled && !stopsLockedRef.current) {
               setHeightRange(sampled);
@@ -631,30 +638,35 @@ function App() {
         const canvas = map.getCanvas();
         const store = heightStoreRef.current;
 
-        const { processed, remaining: rem } = await processHeightTick(
-          {
-            west: bounds.getWest(),
-            east: bounds.getEast(),
-            north: bounds.getNorth(),
-            south: bounds.getSouth(),
-          },
-          canvas.width / devicePixelRatio,
-          canvas.height / devicePixelRatio,
-          store,
-          isOverWater,
-        );
+        try {
+          const { processed, remaining: rem } = await processHeightTick(
+            {
+              west: bounds.getWest(),
+              east: bounds.getEast(),
+              north: bounds.getNorth(),
+              south: bounds.getSouth(),
+            },
+            canvas.width / devicePixelRatio,
+            canvas.height / devicePixelRatio,
+            store,
+            isOverWater,
+            demZoomForMapZoom(zoom),
+          );
 
-        if (processed > 0) {
-          const src = map.getSource(HEIGHT_SOURCE) as mapboxgl.GeoJSONSource | undefined;
-          if (src) src.setData(store.toFeatureCollection());
-          setRemaining(rem);
+          if (processed > 0) {
+            const src = map.getSource(HEIGHT_SOURCE) as mapboxgl.GeoJSONSource | undefined;
+            if (src) src.setData(store.toFeatureCollection());
+            setRemaining(rem);
 
-          if (rem === 0) {
-            updateHeightRangeFromPercentiles(store, bounds);
+            if (rem === 0) {
+              updateHeightRangeFromPercentiles(store, bounds);
+            }
+          } else {
+            setRemaining(null);
+            await sleep(150);
           }
-        } else {
-          setRemaining(null);
-          await sleep(150);
+        } catch {
+          await sleep(500);
         }
 
         await sleep(0);
@@ -760,7 +772,7 @@ function App() {
         minZoom={viewMode === "roads" ? MIN_RENDER_ZOOM_ROADS : undefined}
         mapStyle={mapStyle}
         terrain={
-          viewMode === "terrain" || viewMode === "heightmap"
+          viewMode === "terrain"
             ? { source: MAPBOX_DEM_SOURCE_ID, exaggeration: 1 }
             : undefined
         }

@@ -102,7 +102,7 @@ function getUncomputedCells(
   return result;
 }
 
-async function ensurePrefetched(bounds: Bounds, lngStep: number, latStep: number, store: HeightStore) {
+async function ensurePrefetched(bounds: Bounds, lngStep: number, latStep: number, store: HeightStore, demZoom?: number) {
   const padLng = lngStep * 2;
   const padLat = latStep * 2;
   const needed = {
@@ -119,7 +119,7 @@ async function ensurePrefetched(bounds: Bounds, lngStep: number, latStep: number
     return;
   }
 
-  await prefetchTilesForBounds(needed);
+  await prefetchTilesForBounds(needed, demZoom);
   store.prefetchedBounds = needed;
 }
 
@@ -139,6 +139,7 @@ export async function processHeightTick(
   viewHeight: number,
   store: HeightStore,
   isOverWater?: WaterPredicate,
+  demZoom?: number,
 ): Promise<TickResult> {
   if (!store.gridLocked) {
     const [lngStep, latStep] = computeCellSize(viewWidth, viewHeight, bounds);
@@ -156,7 +157,7 @@ export async function processHeightTick(
   const uncomputed = getUncomputedCells(bounds, lngStep, latStep, store);
   if (!uncomputed.length) return { processed: 0, remaining: 0 };
 
-  await ensurePrefetched(bounds, lngStep, latStep, store);
+  await ensurePrefetched(bounds, lngStep, latStep, store, demZoom);
 
   const batch = uncomputed.slice(0, BATCH_SIZE);
 
@@ -170,7 +171,7 @@ export async function processHeightTick(
       store.waterCells.add(key);
       continue;
     }
-    const elev = await eleAtCoord(lat, lng);
+    const elev = await eleAtCoord(lat, lng, demZoom);
     if (typeof elev !== "number" || !Number.isFinite(elev)) {
       store.failedCells.add(key);
       continue;
