@@ -186,7 +186,7 @@ function ensureGradientLayer(map: mapboxgl.Map, gradeStops: readonly number[]) {
       id: GRADIENT_LAYER,
       type: "line",
       source: GRADIENT_SOURCE,
-      minzoom: 10,
+      // minzoom: 10,
       paint: {
         "line-width": [
           "interpolate", ["linear"], ["zoom"],
@@ -397,7 +397,6 @@ function App() {
     debounceRef.current = setTimeout(async () => {
       const map = mapRef.current?.getMap();
       if (!map || !map.isStyleLoaded()) return;
-      if (map.getZoom() < 8) return;
 
       ensureRoadSource(map);
       ensureGradientLayer(map, gradeStopsRef.current);
