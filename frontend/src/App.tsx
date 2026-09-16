@@ -46,7 +46,7 @@ const GRADE_STOP_PERCENTILES = [0, 0.4, 0.667, 0.9, HIGH_PERCENTILE] as const;
 const MAX_SLOPE_SCALE = 100;
 const SLOPE_STOP_PERCENTILES = [0, 0.3, 0.6, 0.9, HIGH_PERCENTILE] as const;
 
-const MIN_RENDER_ZOOM_SLOPE = 9;
+const MIN_RENDER_ZOOM_ROADS = 11;
 const ZOOM_SETTLE_MS = 400;
 
 const INITIAL_STOPS: number[] = [0, 5, 10, 15, 20];
@@ -469,17 +469,7 @@ function App() {
 
         const zoom = roundZoom(map.getZoom());
 
-        if (zoom < MIN_RENDER_ZOOM_SLOPE) {
-          if (lastZoom === null || lastZoom >= MIN_RENDER_ZOOM_SLOPE) {
-            slopeStoreRef.current = new SlopeStore();
-            const src = map.getSource(SLOPE_SOURCE) as mapboxgl.GeoJSONSource | undefined;
-            if (src) src.setData({ type: "FeatureCollection", features: [] });
-            setRemaining(null);
-          }
-          lastZoom = zoom;
-          await sleep(200);
-          continue;
-        }
+        
 
         if (lastZoom !== null && zoom !== lastZoom) {
           slopeStoreRef.current = new SlopeStore();
@@ -586,18 +576,7 @@ function App() {
 
         const zoom = roundZoom(map.getZoom());
 
-        if (zoom < MIN_RENDER_ZOOM_SLOPE) {
-          if (lastZoom === null || lastZoom >= MIN_RENDER_ZOOM_SLOPE) {
-            heightStoreRef.current = new HeightStore();
-            heightGridPrescaleNeededRef.current = true;
-            const src = map.getSource(HEIGHT_SOURCE) as mapboxgl.GeoJSONSource | undefined;
-            if (src) src.setData({ type: "FeatureCollection", features: [] });
-            setRemaining(null);
-          }
-          lastZoom = zoom;
-          await sleep(200);
-          continue;
-        }
+        
 
         if (lastZoom !== null && zoom !== lastZoom) {
           heightStoreRef.current = new HeightStore();
@@ -778,7 +757,7 @@ function App() {
         }}
         style={{ width: "100%", height: "100%" }}
         projection="globe"
-        minZoom={viewMode === "roads" ? 11 : undefined}
+        minZoom={viewMode === "roads" ? MIN_RENDER_ZOOM_ROADS : undefined}
         mapStyle={mapStyle}
         terrain={
           viewMode === "terrain" || viewMode === "heightmap"
