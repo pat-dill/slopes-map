@@ -258,7 +258,7 @@ type HoverElevation =
   | { ok: false; pending?: boolean };
 
 function App() {
-  const [viewMode, setViewMode] = useState<ViewMode>("roads");
+  const [viewMode, setViewMode] = useState<ViewMode>("heightmap");
   const viewModeRef = useRef(viewMode);
   viewModeRef.current = viewMode;
 
@@ -778,6 +778,7 @@ function App() {
         }}
         style={{ width: "100%", height: "100%" }}
         projection="globe"
+        minZoom={viewMode === "roads" ? 11 : undefined}
         mapStyle={mapStyle}
         terrain={
           viewMode === "terrain" || viewMode === "heightmap"
