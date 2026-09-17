@@ -885,7 +885,7 @@ function App() {
                         textAlign: "right",
                       }}
                     >
-                      {m.toLocaleString(undefined, { maximumFractionDigits: 0 })} m
+                      {(m * M_TO_FT).toLocaleString(undefined, { maximumFractionDigits: 0 })} ft
                     </span>
                   );
                 })}
@@ -933,14 +933,9 @@ function App() {
             Elevation
           </div>
           {hoverElevation.ok ? (
-            <>
-              <div style={{ color: "#fff", fontSize: 14, fontVariantNumeric: "tabular-nums" }}>
-                {(hoverElevation.meters * M_TO_FT).toLocaleString(undefined, { maximumFractionDigits: 0 })} ft
-              </div>
-              <div style={{ color: "#ffffffcc", fontSize: 12, fontVariantNumeric: "tabular-nums", marginTop: 2 }}>
-                {hoverElevation.meters.toLocaleString(undefined, { maximumFractionDigits: 1 })} m
-              </div>
-            </>
+            <div style={{ color: "#fff", fontSize: 14, fontVariantNumeric: "tabular-nums" }}>
+              {(hoverElevation.meters * M_TO_FT).toLocaleString(undefined, { maximumFractionDigits: 0 })} ft
+            </div>
           ) : hoverElevation.pending ? (
             <div style={{ color: "#ffffffaa", fontSize: 13 }}>
               …
