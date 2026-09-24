@@ -40,11 +40,11 @@ const HIGH_PERCENTILE = 0.985;
 
 /** Road grade scale (percent). */
 const MAX_GRADE_SCALE = 25;
-const GRADE_STOP_PERCENTILES = [0, 0.4, 0.667, 0.9, HIGH_PERCENTILE] as const;
+const GRADE_STOP_PERCENTILES = [0, 0.5, 0.8, 0.9, HIGH_PERCENTILE] as const;
 
 /** Terrain slope scale (percent grade equivalent). */
 const MAX_SLOPE_SCALE = 100;
-const SLOPE_STOP_PERCENTILES = [0, 0.3, 0.6, 0.9, HIGH_PERCENTILE] as const;
+const SLOPE_STOP_PERCENTILES = [0, 0.5, 0.8, 0.9, HIGH_PERCENTILE] as const;
 
 const MIN_RENDER_ZOOM_ROADS = 11;
 const ZOOM_SETTLE_MS = 400;
