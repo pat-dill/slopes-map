@@ -1,8 +1,8 @@
-import './App.css'
 import Map from "react-map-gl/mapbox";
 import type { MapRef } from "react-map-gl/mapbox";
 import type { ExpressionSpecification } from "mapbox-gl";
 import 'mapbox-gl/dist/mapbox-gl.css';
+import './App.css'
 import { mapboxToken } from "./config.ts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { computeGradients, GradientStore } from "./computeGradients.ts";
