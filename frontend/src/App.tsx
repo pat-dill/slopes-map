@@ -29,6 +29,9 @@ const SLOPE_LAYER = "slope-fill";
 const HEIGHT_SOURCE = "height-data";
 const HEIGHT_LAYER = "height-fill";
 
+const WATERWAY_SOURCE = "streets-v8";
+const WATERWAY_LAYER = "waterway-lines";
+
 /** Visible elevation range for heightmap coloring (robust to outliers). */
 const HEIGHTMAP_LOW_PERCENTILE = 0.003;
 const HEIGHTMAP_HIGH_PERCENTILE = 0.997;
@@ -245,6 +248,29 @@ function ensureHeightmapLayer(map: mapboxgl.Map, lowM: number, highM: number) {
   }
 }
 
+/** Blue line layer for rivers, streams, canals, etc. from Mapbox Streets waterway data. */
+function ensureWaterwayLayer(map: mapboxgl.Map) {
+  if (!map.getSource(WATERWAY_SOURCE)) {
+    map.addSource(WATERWAY_SOURCE, {
+      type: "vector",
+      url: "mapbox://mapbox.mapbox-streets-v8",
+    });
+  }
+  if (!map.getLayer(WATERWAY_LAYER)) {
+    map.addLayer({
+      id: WATERWAY_LAYER,
+      type: "line",
+      source: WATERWAY_SOURCE,
+      "source-layer": "waterway",
+      paint: {
+        "line-color": "#4a90d9",
+        "line-width": 1,
+        "line-opacity": 0.85,
+      },
+    });
+  }
+}
+
 function roundZoom(z: number): number {
   return Math.round(z * 100) / 100;
 }
@@ -401,6 +427,7 @@ function App() {
 
       ensureRoadSource(map);
       ensureGradientLayer(map, gradeStopsRef.current);
+      ensureWaterwayLayer(map);
 
       computingRef.current = true;
       const src = map.getSource(GRADIENT_SOURCE) as mapboxgl.GeoJSONSource | undefined;
@@ -486,6 +513,7 @@ function App() {
         }
 
         ensureSlopeLayer(map, slopeStopsRef.current);
+        ensureWaterwayLayer(map);
 
         const bounds = map.getBounds()!;
         const canvas = map.getCanvas();
@@ -634,6 +662,7 @@ function App() {
 
         const { lowM, highM } = heightRangeRef.current;
         ensureHeightmapLayer(map, lowM, highM);
+        ensureWaterwayLayer(map);
 
         const canvas = map.getCanvas();
         const store = heightStoreRef.current;
