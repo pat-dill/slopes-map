@@ -311,6 +311,8 @@ function App() {
   heightRangeRef.current = heightRange;
   /** Run 10×10 presample to set `heightRange` after a reset, before dense `processHeightTick`. */
   const heightGridPrescaleNeededRef = useRef(true);
+  /** Non-null only while dragging a legend bound; shown in labels but doesn't trigger map repaint. */
+  const [dragHeightRange, setDragHeightRange] = useState<{ lowM: number; highM: number } | null>(null);
   const [hoverElevation, setHoverElevation] = useState<HoverElevation | null>(null);
 
   const mapRef = useRef<MapRef>(null);
@@ -899,25 +901,66 @@ function App() {
                 justifyContent: "space-between",
                 height: 160,
               }}>
-                {Array.from({ length: COLORS.length }, (_, i) => {
-                  const spanM = Math.max(heightRange.highM - heightRange.lowM, 1e-3);
-                  const t = (COLORS.length - 1 - i) / (COLORS.length - 1);
-                  const m = heightRange.lowM + spanM * t;
-                  return (
-                    <span
-                      key={i}
-                      style={{
-                        color: "#ffffffcc",
-                        fontSize: 11,
-                        lineHeight: 1,
-                        fontVariantNumeric: "tabular-nums",
-                        textAlign: "right",
-                      }}
-                    >
-                      {(m * M_TO_FT).toLocaleString(undefined, { maximumFractionDigits: 0 })} ft
-                    </span>
-                  );
-                })}
+                {(() => {
+                  const displayRange = dragHeightRange ?? heightRange;
+                  const spanM = Math.max(displayRange.highM - displayRange.lowM, 1e-3);
+                  return Array.from({ length: COLORS.length }, (_, i) => {
+                    const t = (COLORS.length - 1 - i) / (COLORS.length - 1);
+                    const m = displayRange.lowM + spanM * t;
+                    const isTop = i === 0;
+                    const isBottom = i === COLORS.length - 1;
+                    const isDraggable = stopsLocked && (isTop || isBottom);
+                    return (
+                      <span
+                        key={i}
+                        style={{
+                          color: isDraggable ? "#ffb020" : "#ffffffcc",
+                          fontSize: 11,
+                          lineHeight: 1,
+                          fontVariantNumeric: "tabular-nums",
+                          textAlign: "right",
+                          cursor: isDraggable ? "ns-resize" : undefined,
+                          userSelect: "none",
+                        }}
+                        onMouseDown={isDraggable ? (e) => {
+                          e.preventDefault();
+                          const startY = e.clientY;
+                          const startM = isTop ? heightRangeRef.current.highM : heightRangeRef.current.lowM;
+                          const otherM = isTop ? heightRangeRef.current.lowM : heightRangeRef.current.highM;
+                          const ftPerPx = 1;
+                          const base = heightRangeRef.current;
+
+                          setDragHeightRange(base);
+
+                          const onMove = (ev: MouseEvent) => {
+                            const dy = startY - ev.clientY;
+                            const deltaM = (dy * ftPerPx) / M_TO_FT;
+                            let nextM = startM + deltaM;
+                            if (isTop && nextM <= otherM) nextM = otherM + 1 / M_TO_FT;
+                            if (isBottom && nextM >= otherM) nextM = otherM - 1 / M_TO_FT;
+                            setDragHeightRange(
+                              isTop ? { ...base, highM: nextM } : { ...base, lowM: nextM },
+                            );
+                          };
+
+                          const onUp = () => {
+                            window.removeEventListener("mousemove", onMove);
+                            window.removeEventListener("mouseup", onUp);
+                            setDragHeightRange((preview) => {
+                              if (preview) setHeightRange(preview);
+                              return null;
+                            });
+                          };
+
+                          window.addEventListener("mousemove", onMove);
+                          window.addEventListener("mouseup", onUp);
+                        } : undefined}
+                      >
+                        {(m * M_TO_FT).toLocaleString(undefined, { maximumFractionDigits: 0 })} ft
+                      </span>
+                    );
+                  });
+                })()}
               </div>
             </>
           ) : (
